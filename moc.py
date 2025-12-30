@@ -1,269 +1,362 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from tqdm import tqdm # 进度条库，没有的话可以把相关代码删掉
 
-class Segment:
-    """定义特征线上的线段：属于哪个网格，长度是多少"""
-    def __init__(self, region_idx, length):
-        self.region_idx = region_idx # 网格索引 (ix, iy)
-        self.length = length         # 线段长度 (cm)
+class MOC_2D_PinCell:
+    def __init__(self):
+        # ==============================
+        # 1. 几何与物理参数
+        # ==============================
+        self.pitch = 1.26         # 栅距 (cm)
+        self.radius = 0.4096      # 燃料棒半径 (cm) (典型压水堆尺寸)
+        
+        # 区域定义: 0=Fuel, 1=Moderator
+        self.n_regions = 2
+        
+        # 真实几何体积 (cm^2)
+        self.vol_geo = np.zeros(self.n_regions)
+        self.vol_geo[0] = np.pi * self.radius**2
+        self.vol_geo[1] = self.pitch**2 - self.vol_geo[0]
+        
+        # 物理截面 (单群)
+        # Fuel: 高吸收, 高裂变 (nu*Sf > Sa 才有 k>1)
+        # k_inf_fuel = 0.7 / 0.4 = 1.75
+        self.mat_fuel = {'St': 1.0, 'nSf': 0.7, 'Sa': 0.4} 
+        self.mat_fuel['Ss'] = self.mat_fuel['St'] - self.mat_fuel['Sa']
+        
+        # Mod: 低吸收, 纯散射
+        self.mat_mod = {'St': 1.0, 'nSf': 0.0, 'Sa': 0.02}
+        self.mat_mod['Ss'] = self.mat_mod['St'] - self.mat_mod['Sa']
+        
+        self.materials = [self.mat_fuel, self.mat_mod]
+        
+        # MOC 参数
+        self.n_azimuthal = 16   # 方位角数量 (0~PI)
+        self.ray_spacing = 0.03 # 射线间距 (cm)
+        
+        # 求解变量
+        self.flux = np.ones(self.n_regions)
+        self.source = np.zeros(self.n_regions)
+        self.keff = 1.0
+        
+        # 边界通量 (入射角通量)
+        self.boundary_psi = 1.0
 
-class Track:
-    """定义一条特征线"""
-    def __init__(self, start_pt, angle_idx, spacing):
-        self.segments = []      # 包含的线段列表
-        self.angle_idx = angle_idx 
-        self.spacing = spacing  # 线间距 (cm)
-        self.flux_in = 0.0      # 入射角通量 (真空边界默认为0)
-
-class MOC_Solver_2D:
-    def __init__(self, side_length, n_mesh, n_angles):
-        # --- 1. 几何与网格定义 ---
-        self.L = side_length          # 反应堆边长 (cm)
-        self.N = n_mesh               # 网格划分 N x N
-        self.dx = self.L / self.N     # 网格尺寸
-        self.n_angles = n_angles      # 方位角数量 (0到90度划分数)
-        
-        # 物理参数 (默认为均匀介质，类似第1题的参数)
-        # 这里把 2D 数组初始化，支持非均匀介质 (Checkerboard)
-        self.sigma_t = np.ones((self.N, self.N)) * 0.5   # 总截面
-        self.sigma_s = np.ones((self.N, self.N)) * 0.25  # 散射截面
-        self.nu_sigma_f = np.ones((self.N, self.N)) * 0.255 # 产额截面 (设置得稍大以保证临界)
-        
-        # 结果数组
-        self.flux = np.ones((self.N, self.N)) # 标量通量
-        self.k_eff = 1.0
-        
-        # MOC 射线参数
-        self.tracks = []     # 所有的射线
-        self.angles = []     # 角度值
-        self.weights = []    # 角度权重
-        
-        # 初始化
-        self._init_angles()
-        self._perform_ray_tracing()
-
-    def _init_angles(self):
-        """初始化求积组 (Tabuchi-Yamamoto 或简单的均匀分布)"""
-        # 简单起见，我们在 (0, PI/2) 区间均匀选取方位角
-        # MOC通常需要对称性，这里我们生成 0~90度，利用对称性覆盖 0~360
-        # 权重简化处理
-        for i in range(self.n_angles):
-            phi = (i + 0.5) * (np.pi / 2) / self.n_angles
-            self.angles.append(phi)
-            self.weights.append(np.pi / 2 / self.n_angles) # 权重归一化对应 PI/2
-
-    def _perform_ray_tracing(self):
-        """核心难点：几何径迹追踪 (Ray Tracing)"""
-        print("正在进行几何径迹追踪 (Ray Tracing)...")
-        ray_spacing = 0.1 # 射线间距 (cm)，越小越准但越慢
-        
+    def generate_tracks(self):
+        """
+        生成特征线轨迹 (Ray Tracing)
+        """
+        print(">>> 生成特征线轨迹...")
         self.tracks = []
         
-        # 针对每个角度进行追踪
-        for i_ang, phi in enumerate(self.angles):
-            # 方向向量
-            omega_x = np.cos(phi)
-            omega_y = np.sin(phi)
-            
-            # 为了简化，我们只处理第一象限 (0~90度) 的射线
-            # 然后利用几何对称性，认为中子在四个方向是对称流动的
-            # (注意：这是一个针对均匀/对称问题的简化，严谨的MOC需要处理4个象限)
-            
-            # 投影面积 (用于体积守恒修正)
-            Ax = self.L * np.sin(phi)
-            Ay = self.L * np.cos(phi)
-            
-            # 确定射线数量
-            n_rays = int((Ax + Ay) / ray_spacing) + 1
-            eff_spacing = (Ax + Ay) / n_rays # 调整后的间距以填满区域
-            
-            # 从左下角开始扫描
-            # 坐标系旋转，我们将所有射线看作垂直于“投影面”射入
-            for r in range(n_rays):
-                track = Track(None, i_ang, eff_spacing)
-                
-                # 确定射线的起始点 (x, y)
-                # 这是一个几何技巧：在旋转坐标系下均匀分布，然后逆变换回 (x,y)
-                # 这里使用一种简化的“穿墙法”：
-                
-                # 射线的截距式： -x*sin(phi) + y*cos(phi) = dist
-                dist = (r + 0.5) * eff_spacing - Ax # 偏移量
-                
-                # 寻找进入点 (Inlet)
-                # 射线一定从 左边界(x=0) 或 下边界(y=0) 进入 (因为 phi在0-90度)
-                # y = x * tan(phi) + c
-                
-                # ...为了代码可读性，我们采用更直观的“步进法”...
-                # 我们不从外部射入，而是遍历网格边界作为起点。
-                pass 
-
-        # === 重新实现的简单版 Ray Tracing (步进法) ===
-        # 上面的通用法太复杂，我们用针对笛卡尔网格的特定算法
-        self.tracks = []
-        for i_ang, phi in enumerate(self.angles):
-            sin_phi = np.sin(phi)
-            cos_phi = np.cos(phi)
-            tan_phi = np.tan(phi)
-            
-            # 射线间距在 x 和 y 轴上的投影
-            delta_x = ray_spacing / sin_phi
-            delta_y = ray_spacing / cos_phi
-            
-            # 1. 从左边界 (x=0) 出发的射线
-            y_starts = np.arange(delta_y/2, self.L, delta_y)
-            for y0 in y_starts:
-                self._trace_single_ray(0, y0, cos_phi, sin_phi, i_ang, ray_spacing)
-                
-            # 2. 从下边界 (y=0) 出发的射线
-            x_starts = np.arange(delta_x/2, self.L, delta_x)
-            for x0 in x_starts:
-                self._trace_single_ray(x0, 0, cos_phi, sin_phi, i_ang, ray_spacing)
-                
-        print(f"追踪完成，共生成 {len(self.tracks)} 条特征线。")
-
-    def _trace_single_ray(self, x0, y0, dx_dir, dy_dir, angle_idx, spacing):
-        """追踪单条射线，记录它切过了哪些网格"""
-        track = Track((x0, y0), angle_idx, spacing)
+        # 在 [0, pi] 上均匀取角
+        angles = np.linspace(0, np.pi, self.n_azimuthal, endpoint=False) + (np.pi/self.n_azimuthal)/2
         
-        curr_x, curr_y = x0, y0
-        
-        # 防止死循环的安全计数
-        step = 0
-        max_step = self.N * 3
-        
-        while 0 <= curr_x < self.L and 0 <= curr_y < self.L and step < max_step:
-            # 当前所在的网格索引
-            ix = int(curr_x // self.dx)
-            iy = int(curr_y // self.dx)
+        for angle in angles:
+            sin_a = np.sin(angle)
+            cos_a = np.cos(angle)
             
-            # 边界修正 (防止浮点误差导致索引越界)
-            if ix == self.N: ix -= 1
-            if iy == self.N: iy -= 1
+            # 计算投影宽度 (旋转后的矩形宽度)
+            # 投影宽度 = |w*cos| + |h*sin|
+            proj_width = abs(self.pitch * cos_a) + abs(self.pitch * sin_a)
             
-            # 计算这一步要走的距离
-            # 距离右边界的距离 / x方向分量
-            dist_x_wall = ((ix + 1) * self.dx - curr_x) / dx_dir
-            # 距离上边界的距离 / y方向分量
-            dist_y_wall = ((iy + 1) * self.dx - curr_y) / dy_dir
+            # 生成射线偏移量
+            n_rays = int(proj_width / self.ray_spacing) + 1
+            offsets = np.linspace(-proj_width/2, proj_width/2, n_rays)
             
-            # 谁近走谁
-            segment_len = 0.0
-            if dist_x_wall < dist_y_wall:
-                segment_len = dist_x_wall
-                # 移动坐标
-                curr_x = (ix + 1) * self.dx + 1e-10 # 微小偏移防止卡在边界
-                curr_y += segment_len * dy_dir
-            else:
-                segment_len = dist_y_wall
-                curr_x += segment_len * dx_dir
-                curr_y = (iy + 1) * self.dx + 1e-10
+            # 实际的射线间距 (微调以填满宽度)
+            real_spacing = proj_width / n_rays if n_rays > 0 else self.ray_spacing
             
-            track.segments.append(Segment((ix, iy), segment_len))
-            step += 1
-            
-        self.tracks.append(track)
-
-    def solve(self):
-        """主求解器：源迭代 + 幂迭代"""
-        print("开始 MOC 输运计算...")
-        
-        for outer in range(1000): # 外迭代 (Power Iteration)
-            phi_old = self.flux.copy()
-            
-            # 1. 计算总源项 Q (各向同性)
-            # Q = (Sigma_s * phi + 1/k * nu_Sigma_f * phi) / (4*pi)
-            # 注意：MOC中习惯将 4*pi 归一化处理，这里简化处理
-            source_term = (self.sigma_s * self.flux + 
-                          (self.nu_sigma_f / self.k_eff) * self.flux) / (4 * np.pi)
-            
-            # 2. 内迭代 (Flux Sweep) - MOC 扫描
-            # 初始化新的标量通量累加器
-            new_flux = np.zeros_like(self.flux)
-            
-            # 遍历所有角度
-            for i_ang in range(self.n_angles):
-                # 4*pi 的权重因子 (因为我们只算了第一象限，假设4象限对称)
-                # 积分 weight * flux，4个象限 x 权重
-                angular_weight = self.weights[i_ang] * 4 * np.pi 
+            for b in offsets:
+                # 追踪单条射线
+                segments = self._trace_single_ray(angle, b)
                 
-                # 遍历该角度下的所有射线
-                # 筛选出当前角度的 track (实际优化应预先分组)
-                current_tracks = [t for t in self.tracks if t.angle_idx == i_ang]
-                
-                for track in current_tracks:
-                    # 真空边界条件：入射角通量 = 0
-                    psi_in = 0.0 
+                if len(segments) > 0:
+                    # 权重 = 射线间距 * 角度权重
+                    # 角度权重 = pi / N_angles (均匀分布)
+                    weight = real_spacing * (np.pi / self.n_azimuthal)
                     
-                    # --- 正向扫描 (Forward Sweep) ---
-                    for seg in track.segments:
-                        ix, iy = seg.region_idx
-                        l = seg.length
-                        sig_t = self.sigma_t[ix, iy]
-                        q_source = source_term[ix, iy]
+                    self.tracks.append({
+                        'segs': segments,
+                        'w': weight
+                    })
+        
+        print(f"    共生成 {len(self.tracks)} 条轨迹")
+        self._correct_volumes()
+
+    def _trace_single_ray(self, angle, b):
+        """计算直线与 Fuel/Mod 的交点"""
+        P2 = self.pitch / 2.0
+        sin_a, cos_a = np.sin(angle), np.cos(angle)
+        
+        # 1. 计算与矩形边界的交点
+        intersects = []
+        
+        # x = +/- P2
+        if abs(cos_a) > 1e-9:
+            for x in [-P2, P2]:
+                y = (b + x * sin_a) / cos_a
+                if -P2-1e-5 <= y <= P2+1e-5:
+                    intersects.append((x, y))
+        # y = +/- P2
+        if abs(sin_a) > 1e-9:
+            for y in [-P2, P2]:
+                x = (y * cos_a - b) / sin_a
+                if -P2-1e-5 <= x <= P2+1e-5:
+                    intersects.append((x, y))
+        
+        # 去重并排序
+        valid_pts = sorted(list(set([(round(p[0],6), round(p[1],6)) for p in intersects])),
+                           key=lambda p: p[0]*cos_a - p[1]*sin_a) # 沿垂直于射线的方向排序有问题，应沿射线方向
+        # 修正排序：沿射线方向 t = x*sin - y*cos (注意坐标系定义)
+        # 直线方程: x*sin - y*cos = -b. 参数方程 x=x0 - t*cos, y=y0 - t*sin ??
+        # 简单点：按 x 或 y 排序即可，只要单调
+        if abs(cos_a) > abs(sin_a):
+            valid_pts.sort(key=lambda p: p[0] if cos_a>0 else -p[0])
+        else:
+            valid_pts.sort(key=lambda p: p[1] if sin_a>0 else -p[1])
+
+        if len(valid_pts) < 2: return []
+        
+        p_start, p_end = valid_pts[0], valid_pts[-1]
+        total_len = np.hypot(p_end[0]-p_start[0], p_end[1]-p_start[1])
+        if total_len < 1e-6: return []
+
+        # 2. 计算与圆的交点
+        # 直线到圆心(0,0)距离 = |b| (因为我们构建方程时 b就是截距)
+        # 注意：这里的几何构建稍微有点tricky，上面的投影法构建中，b就是距离
+        # 验证：直线方程 -x*sin + y*cos = b (或者类似的旋转)。
+        # 在 generate_tracks 里，我们实际上是把坐标系旋转了 angle。
+        # 在旋转坐标系下，y' = b 是直线。
+        # 圆心在 (0,0)。距离确实是 |b|。
+        
+        dist = abs(b)
+        segs = []
+        
+        if dist < self.radius:
+            half_chord = np.sqrt(self.radius**2 - dist**2)
+            l_fuel = 2 * half_chord
+            l_mod = max(0, total_len - l_fuel)
+            
+            # 简化模型：认为燃料总在中间
+            # Mod -> Fuel -> Mod
+            segs.append({'id': 1, 'l': l_mod/2})
+            segs.append({'id': 0, 'l': l_fuel})
+            segs.append({'id': 1, 'l': l_mod/2})
+        else:
+            # 只有慢化剂
+            segs.append({'id': 1, 'l': total_len})
+            
+        return segs
+
+    def _correct_volumes(self):
+        """
+        关键步骤：体积修正
+        MOC积分出的体积 sum(w*l) 必须等于真实几何体积，否则通量归一化会出错
+        """
+        vol_moc = np.zeros(self.n_regions)
+        for t in self.tracks:
+            for s in t['segs']:
+                vol_moc[s['id']] += s['l'] * t['w']
+        
+        print(f"    几何体积: {self.vol_geo}")
+        print(f"    MOC 体积: {vol_moc}")
+        
+        # 计算修正因子
+        self.vol_corr = np.divide(self.vol_geo, vol_moc, out=np.ones_like(vol_moc), where=vol_moc!=0)
+        print(f"    体积修正因子: {self.vol_corr}")
+        
+        # 将修正因子乘到每条轨迹的长度或权重上，这里乘到权重上方便后续计算
+        for t in self.tracks:
+            # 注意：一条轨迹可能穿过多个区域，权重是共享的。
+            # 所以不能简单修改 t['w']。
+            # 我们在积分通量时，动态应用修正因子。
+            pass 
+
+    def solve(self, max_iter=200, tol=1e-5):
+        print("\n>>> 开始源迭代...")
+        
+        for it in range(max_iter):
+            # 1. 计算源项 Q (各向同性)
+            # Source = (1/k)*nuSf*Phi + Ss*Phi
+            # MOC 扫描使用的是 q = Q / (4*pi)
+            for r in range(self.n_regions):
+                mat = self.materials[r]
+                self.source[r] = (1.0/self.keff)*mat['nSf']*self.flux[r] + mat['Ss']*self.flux[r]
+            
+            # 2. 输运扫描 (MOC Sweep)
+            # 累加量
+            new_flux_num = np.zeros(self.n_regions) # 分子: sum(w * l * psi_avg)
+            
+            total_leakage = 0.0 # 飞出去的总权重
+            total_weight = 0.0  # 总权重
+            
+            for t in self.tracks:
+                # 入射通量 (白边界：各向同性反射)
+                psi = self.boundary_psi
+                
+                for s in t['segs']:
+                    rid = s['id']
+                    length = s['l']
+                    mat = self.materials[rid]
+                    st = mat['St']
+                    vol_factor = self.vol_corr[rid] # 关键：应用体积修正
+                    
+                    # 标量源 -> 角源
+                    q_ang = self.source[rid] / (4*np.pi)
+                    
+                    # 解析解
+                    # psi_out = psi_in * exp(-St*L) + (q/St)*(1 - exp(-St*L))
+                    if st > 1e-6:
+                        exp_f = np.exp(-st * length)
+                        psi_out = psi * exp_f + (q_ang/st) * (1.0 - exp_f)
+                        psi_avg = (q_ang/st) - (psi_out - psi) / (st * length)
+                    else:
+                        psi_out = psi + q_ang * length
+                        psi_avg = psi + 0.5 * q_ang * length
                         
-                        # MOC 核心方程 (指数衰减)
-                        # psi_out = psi_in * exp(-sig_t * l) + (Q/sig_t)*(1 - exp(-sig_t * l))
-                        exp_val = np.exp(-sig_t * l)
-                        psi_avg = (q_source / sig_t) + (psi_in - (q_source / sig_t)) * (1 - exp_val) / (sig_t * l)
-                        psi_out = psi_in * exp_val + (q_source / sig_t) * (1 - exp_val)
-                        
-                        # 累加标量通量贡献
-                        # contribution = psi_avg * volume_fraction
-                        # 实际公式：Phi += 4*pi * weight * (Area * l / Volume) * psi_avg
-                        # Area = spacing, Volume = dx*dx
-                        # 简化理解：我们对每一条线段上的平均通量进行加权平均
-                        
-                        # 体积加权系数 = (spacing * l) / (dx * dx)
-                        vol_weight = (track.spacing * l) / (self.dx * self.dx)
-                        new_flux[ix, iy] += angular_weight * psi_avg * vol_weight
-                        
-                        # 传递通量
-                        psi_in = psi_out
+                    # 积分通量：Phi * V = sum( 4pi * w * l * psi_avg )
+                    # 我们这里累加的是 Phi * V 的一部分
+                    # 引入 vol_factor 确保 volume consistency
+                    
+                    # 权重 w 已经包含了 delta_r 和 delta_angle
+                    # 在 2D 中，通常对 2pi 积分。如果是 4pi，系数相应变化。
+                    # 这里简化处理：我们只关心相对比例，最后会归一化。
+                    
+                    term = t['w'] * length * psi_avg * vol_factor
+                    new_flux_num[rid] += term
+                    
+                    # 传递到下一段
+                    psi = psi_out
+                
+                # 收集出射通量用于边界更新
+                total_leakage += psi * t['w']
+                total_weight += t['w']
+                
+            # 3. 更新边界条件 (White BC)
+            # 下一代的入射 = 这一代的出射平均值
+            if total_weight > 0:
+                self.boundary_psi = total_leakage / total_weight
+                
+            # 4. 更新标量通量
+            # Phi = (Sum term) / Vol_geo * 4pi
+            for r in range(self.n_regions):
+                # 4pi 因子来自于将角通量积分为标量通量
+                # 由于我们在 MOC 公式里除以了 4pi 算 q_ang，这里要乘回来
+                self.flux[r] = (new_flux_num[r] * 4 * np.pi) / self.vol_geo[r]
             
-            # 更新通量
-            self.flux = new_flux
+            # 5. !!! 通量重归一化 (Flux Renormalization) !!!
+            # 防止通量因 k!=1 而归零或爆炸
+            # 强行将平均通量设为 1.0
+            avg_flux = np.sum(self.flux * self.vol_geo) / np.sum(self.vol_geo)
+            self.flux /= avg_flux
             
-            # 3. 更新 k_eff
-            # k_new = k_old * (Total Production New / Total Production Old)
-            prod_new = np.sum(self.nu_sigma_f * self.flux)
-            prod_old = np.sum(self.nu_sigma_f * phi_old)
+            # 6. 计算 k_eff
+            # k_new = k_old * (Production_New / Production_Old)
+            # Production = sum(nuSf * Phi * V)
+            # 由于我们对 Phi 做了归一化，我们不能直接比较 Source 变化。
+            # 标准做法：k = Total_Production / Total_Loss
+            # Total Loss = Absorption + Leakage (Boundary is reflective, so Leakage=0)
+            # Total Loss = sum(Sa * Phi * V)
             
-            k_new = self.k_eff * (prod_new / prod_old)
-            k_diff = abs(k_new - self.k_eff)
-            self.k_eff = k_new
+            prod_rate = sum([m['nSf'] * self.flux[i] * self.vol_geo[i] for i, m in enumerate(self.materials)])
+            abs_rate  = sum([m['Sa']  * self.flux[i] * self.vol_geo[i] for i, m in enumerate(self.materials)])
             
-            # 归一化
-            self.flux = self.flux / np.mean(self.flux)
+            # k = Production / Absorption (在无泄露情况下)
+            k_new = prod_rate / abs_rate
             
-            if outer % 5 == 0:
-                print(f"Iter {outer}: k_eff = {self.k_eff:.6f}, diff = {k_diff:.2e}")
+            # 检查收敛
+            err = abs(k_new - self.keff)
+            self.keff = k_new
             
-            if k_diff < 1e-5:
-                print(f"收敛! 最终 k_eff = {self.k_eff:.6f}")
+            if (it+1) % 5 == 0:
+                print(f"Iter {it+1:3d}: k_eff = {self.keff:.5f}, Fuel Flux = {self.flux[0]:.3f}, Mod Flux = {self.flux[1]:.3f}")
+            
+            if err < tol:
+                print(f"\n>>> 收敛于第 {it+1} 步")
                 break
+                
+        return self.keff, self.flux
 
-    def plot_flux(self):
-        """画出二维通量图"""
-        plt.figure(figsize=(8, 7))
-        # extent设置坐标轴范围
-        plt.imshow(self.flux.T, origin='lower', extent=[0, self.L, 0, self.L], cmap='jet')
-        plt.colorbar(label='Normalized Scalar Flux')
-        plt.title(f'2D MOC Flux Distribution\n k_eff = {self.k_eff:.5f}')
-        plt.xlabel('x (cm)')
-        plt.ylabel('y (cm)')
-        plt.show()
+def plot_moc_3d_distribution(solver):
+    """
+    绘制 MOC 计算结果的 3D 通量分布图
+    """
+    print("正在生成 3D 可视化...")
+    
+    # 1. 创建高分辨率网格 (为了画出圆形的轮廓)
+    resolution = 200
+    p_half = solver.pitch / 2.0
+    x = np.linspace(-p_half, p_half, resolution)
+    y = np.linspace(-p_half, p_half, resolution)
+    X, Y = np.meshgrid(x, y)
+    
+    # 2. 重建通量场
+    # MOC 的结果是区域平均值，所以我们需要把值"填"回几何网格里
+    Z = np.zeros_like(X)
+    
+    # 计算每个点到中心的距离
+    R_dist = np.sqrt(X**2 + Y**2)
+    
+    # 获取计算出的通量值
+    val_fuel = solver.flux[0]
+    val_mod  = solver.flux[1]
+    
+    # 赋值：圆内赋 Fuel 值，圆外赋 Mod 值
+    # 使用 NumPy 的掩码操作
+    mask_fuel = R_dist <= solver.radius
+    Z[mask_fuel] = val_fuel
+    Z[~mask_fuel] = val_mod  # 取反，即圆外
+    
+    # 3. 绘图
+    fig = plt.figure(figsize=(10, 8), dpi=100)
+    ax = fig.add_subplot(1, 1, 1, projection='3d')
+    
+    # 绘制曲面
+    # cmap='viridis' 颜色对比度好
+    surf = ax.plot_surface(X, Y, Z, cmap='viridis', 
+                           linewidth=0, antialiased=False, alpha=0.9)
+    
+    # 4. 绘制底部的几何投影 (辅助线)
+    # 画一个红色的圆圈表示燃料棒边界
+    theta = np.linspace(0, 2*np.pi, 100)
+    xc = solver.radius * np.cos(theta)
+    yc = solver.radius * np.sin(theta)
+    # zdir='z', offset=... 把线画在底部
+    z_floor = np.min(Z) * 0.95
+    ax.plot(xc, yc, zs=z_floor, zdir='z', color='red', linewidth=2, linestyle='--', label='Fuel Pin Boundary')
+    
+    # 5. 设置坐标轴和标题
+    ax.set_xlabel('X (cm)')
+    ax.set_ylabel('Y (cm)')
+    ax.set_zlabel('Neutron Flux (Arbitrary Units)')
+    ax.set_zlim(z_floor, np.max(Z)*1.05)
+    
+    title_text = f"MOC Flux Distribution (Flat Source Approx.)\n$k_{{eff}}={solver.keff:.5f}$"
+    ax.set_title(title_text, fontsize=14, fontweight='bold')
+    
+    # 添加颜色条
+    cbar = fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10)
+    cbar.set_label('Flux Magnitude')
+    
+    # 调整视角 (俯视角度更容易看清凹陷)
+    ax.view_init(elev=45, azim=-45)
+    
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
 
-# === 主程序 ===
 if __name__ == "__main__":
-    # 定义一个 100cm x 100cm 的反应堆
-    # 网格 20x20，角度划分 8 个方位角
-    solver = MOC_Solver_2D(side_length=100.0, n_mesh=40, n_angles=8)
+    # 1. 初始化并计算
+    solver = MOC_2D_PinCell()
+    solver.generate_tracks()
+    k, phi = solver.solve()
     
-    # 可以在这里修改截面做 Checkerboard 测试
-    # 例如：在中心区域设置高吸收区 (控制棒)
-    # mid = 20
-    # solver.sigma_t[mid-5:mid+5, mid-5:mid+5] = 1.0 # 吸收截面变大
+    # 2. 打印数值结果
+    print("="*40)
+    print(f"Final Result: k_eff = {k:.5f}")
+    print(f"Fuel Flux      = {phi[0]:.4f}")
+    print(f"Moderator Flux = {phi[1]:.4f}")
+    print("="*40)
     
-    solver.solve()
-    solver.plot_flux()
+    # 3. 画图 (直接调用上面的函数)
+    plot_moc_3d_distribution(solver)
