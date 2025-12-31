@@ -1,4 +1,8 @@
-## 单能一维均匀平板裸堆计算---1_SN.py
+1. 理论上和最终结果上，$k_{eff}$ 只取决于反应堆本身的材料和几何结构，而与初始源的空间分布（哪里开始）和大小（多少粒子）无关。
+
+## 单能一维均匀平板裸堆计算---1_SN
+
+<img src="https://gitee.com/wenswuu/pictures/raw/master/20251211203343191.webp" alt="image-20251211203333060" style="zoom:67%;" />
 
 - 单能：假定中子能量不会改变；
 - 一维：中子通量$\phi(x)$只是$x$的函数，$y$和$z$方向无限大（一堵无限高、无限宽的墙）；
@@ -57,7 +61,9 @@ $$
 
 - 内迭代：已知phi，固定裂变源，只处理散射，更新得到当代稳定后的phi；
 
-## 单能一维MC---1_mc.py
+## 单能一维MC---1_mc
+
+![image-20251220220518854](https://gitee.com/wenswuu/pictures/raw/master/20251220220523682.webp)
 
 #### 1-理论
 
@@ -65,3 +71,40 @@ $$
 $$
 p(x) = \Sigma_t e^{-\Sigma_t x}
 $$
+
+- 直接找到路径中点所在的网格，并将整段路径长度全部统计到这一个网格中，而没有去计算这段路径是否跨越了两个或多个网格；
+
+## 双群扩散---2_diffusion
+
+<img src="https://gitee.com/wenswuu/pictures/raw/master/20251229133153427.webp" alt="image-20251229133142997" style="zoom:50%;" />
+
+- $\chi$为裂变谱，$\chi_1+\chi_2=1$，图上的数据说明裂变产生的中子都是快中子；
+- 快群：泄露+向下散射+吸收=裂变源；
+- 热群：泄露+吸收=散射源；
+- 扩散方程得到的是通量$\phi(x,y)$；
+
+#### 1-理论
+
+多群扩散方程（忽略向上散射）：
+$$
+-\nabla D_g\nabla \phi_g(r)+\Sigma_{(t,g)}\phi_g(r)-\sum_{g'=1}^{g-1}\Sigma_{s(g'-g)}\phi_{g'}(r)=\frac{\chi_g}{k_{eff}}\sum_{g'=1}^{G}(\nu\Sigma_f)_{g'}\phi_{g'}(r)
+$$
+用矩阵表示：
+
+<img src="https://gitee.com/wenswuu/pictures/raw/master/20251116221107660.webp" alt="image-20251116221055698" style="zoom:80%;" />
+
+<img src="https://gitee.com/wenswuu/pictures/raw/master/20251230165200504.webp" style="zoom: 67%;" />
+
+- 快群中子通量$\phi_1$方程：泄露+转移=裂变源，$ -\nabla \cdot (D_1 \nabla \phi_1(x,y)) + \Sigma_{r1} \phi_1(x,y) = \frac{1}{k_{eff}} (\nu \Sigma_{f1} \phi_1(x,y) + \nu \Sigma_{f2} \phi_2(x,y)) $；
+- 热中子通量$\phi_2$方程：泄露+吸收=散射源，$ -\nabla \cdot (D_2 \nabla \phi_2) + \Sigma_{a2} \phi_2 = \Sigma_{1 \to 2} \phi_1 $；
+
+#### 2-数值计算
+
+空间离散-有限差分法：将连续的空间划分成 $120 \times 130$ 的网格，对于每一个网格点 $(i, j)$，将微分算子 $\nabla^2 \phi$ 近似为差分格式：
+$$
+\frac{\partial^2 \phi}{\partial x^2} \approx \frac{\phi_{i+1} - 2\phi_i + \phi_{i-1}}{h^2}
+$$
+要想计算出快群、热群的通量分布，就需要先解出每个网格节点处的扩散方程，得到各个网格节点处的通量$\phi(x,y)$，再通过插值得到完整的通量分布，其重点应在于**求出系数矩阵，然后求解线性方程组**：
+
+- 初始化一个裂变源$S_f$，通过快群扩散方程得到快群通量$\phi_1(i,j)$，其中微分算子$\nabla^2\phi$近似为差分形式。
+
