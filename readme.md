@@ -1,6 +1,7 @@
-1. 理论上和最终结果上，$k_{eff}$ 只取决于反应堆本身的材料和几何结构，而与初始源的空间分布（哪里开始）和大小（多少粒子）无关。
+1. 理论上和最终结果上，$k_{eff}$ 只取决于反应堆本身的材料和几何结构，而与初始源的空间分布（哪里开始）和大小（多少粒子）无关；
+1. 确定论方法都是要空间离散的，需将微分算子通过空间离散为差分方程；
 
-## 单能一维均匀平板裸堆计算---1_SN
+## 单能一维均匀平板裸堆-SN
 
 <img src="https://gitee.com/wenswuu/pictures/raw/master/20251211203343191.webp" alt="image-20251211203333060" style="zoom:67%;" />
 
@@ -30,7 +31,7 @@ $$
 
 （注：高斯-勒让德求积的求积节点$\mu_1,\mu_2,...\mu_N$与对应的权$w_m$可直接生成，将$\mu_m$代入$\phi(x,\mu)$即可得到$\phi_m(x)$，这里的N也就是SN方法角度离散的个数。）
 
-再通过划分成K个网格，$\phi(x,\mu)$就是一个$K\times N$的二维矩阵，得到差分方程：
+再通过划分成K个网格，$\phi(x,\mu)$就是一个$K\times N$的二维矩阵，得到**差分方程**：
 $$
 \mu_m\frac{\phi_{k+1/2,m}-\phi_{k-1/2,m}}{\Delta x_k}+\Sigma_t\phi_{k,m}=S_k
 $$
@@ -61,7 +62,22 @@ $$
 
 - 内迭代：已知phi，固定裂变源，只处理散射，更新得到当代稳定后的phi；
 
-## 单能一维MC---1_mc
+## 二维SN
+
+<img src="https://gitee.com/wenswuu/pictures/raw/master/20260101163555473.webp" alt="image-20260101163544805" style="zoom:67%;" />
+
+- 二维情况下$\phi$不只是x的函数，还是y的han'shu
+
+针对离散的网格：
+$$
+\frac{\mu}{\Delta x} (\psi_{out, x} - \psi_{in, x}) + \frac{\eta}{\Delta y} (\psi_{out, y} - \psi_{in, y}) + \sigma_t \psi_{center} = Q\\
+ \psi_{center} = \frac{\psi_{in, x} + \psi_{out, x}}{2} \quad \implies \quad \psi_{out, x} = 2\psi_{center} - \psi_{in, x}\\
+ \frac{\mu}{\Delta x} (2\psi_{center} - 2\psi_{in, x}) + \frac{\eta}{\Delta y} (2\psi_{center} - 2\psi_{in, y}) + \sigma_t \psi_{center} = Q\\
+ \psi_{center} \cdot \left[ \sigma_t + \frac{2\mu}{\Delta x} + \frac{2\eta}{\Delta y} \right] = Q + \frac{2\mu}{\Delta x} \psi_{in, x} + \frac{2\eta}{\Delta y} \psi_{in, y}
+$$
+
+
+## 单能一维MC
 
 ![image-20251220220518854](https://gitee.com/wenswuu/pictures/raw/master/20251220220523682.webp)
 
@@ -74,7 +90,7 @@ $$
 
 - 直接找到路径中点所在的网格，并将整段路径长度全部统计到这一个网格中，而没有去计算这段路径是否跨越了两个或多个网格；
 
-## 双群扩散---2_diffusion
+## 双群扩散
 
 <img src="https://gitee.com/wenswuu/pictures/raw/master/20251229133153427.webp" alt="image-20251229133142997" style="zoom:50%;" />
 
@@ -107,4 +123,21 @@ $$
 要想计算出快群、热群的通量分布，就需要先解出每个网格节点处的扩散方程，得到各个网格节点处的通量$\phi(x,y)$，再通过插值得到完整的通量分布，其重点应在于**求出系数矩阵，然后求解线性方程组**：
 
 - 初始化一个裂变源$S_f$，通过快群扩散方程得到快群通量$\phi_1(i,j)$，其中微分算子$\nabla^2\phi$近似为差分形式。
+
+## MOC
+
+1. moc方法与SN方法的区别在哪？仅限于一个解的是微分方程，一个是积分方程吗？SN与MOC本质的区别在于如何处理空间：
+
+   - SN通过将微分转为差分，如向左扫描时，可通过右边的psi解差分方程得到左边的psi，所以SN是做了差分近似的；
+
+   - MOC是直接求解的解析解然后求平均；
+
+2. moc程序计算一个什么样的堆模型比较合适？基准题的工作量都太大了。
+
+#### 1-原理
+
+$$
+\psi_{out} = \psi_{in} \cdot e^{-\tau} + \frac{Q}{\Sigma_t} (1 - e^{-\tau})\\
+\psi_{avg} = \frac{\psi_{in} + \psi_{out}}{2} = \frac{Q}{\Sigma_t} - \frac{\mu}{\Sigma_t \Delta x}(\psi_{out} - \psi_{in})
+$$
 

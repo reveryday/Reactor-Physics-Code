@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.sparse import lil_matrix, csr_matrix
+from scipy.sparse import lil_matrix
 from scipy.sparse.linalg import spsolve
 import time
 

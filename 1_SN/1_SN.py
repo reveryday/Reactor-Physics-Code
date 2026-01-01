@@ -3,6 +3,7 @@ from scipy.special import roots_legendre
 from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm # 用于颜色映射
+import time
 
 def one_dimension_SN():
     # 参数设置
@@ -28,6 +29,7 @@ def one_dimension_SN():
     k_eff = 1.0
 
     print(f"开始计算：(网格数={N_mesh}, Sn=S{N_angles})")
+    start_time = time.time()
     
     # 外迭代
     for outer_it in range(max_outer_iter):
@@ -88,6 +90,9 @@ def one_dimension_SN():
         if diff_k < tolerance_k:
             print(f"收敛于第 {outer_it} 步, k_eff = {k_eff:.6f}")
             break
+
+    end_time = time.time()
+    print(f"第 {outer_it} 步, k_eff = {k_eff:.6f}, 耗时 {end_time - start_time:.2f} 秒")
     
     phi_0 = np.sum(weights * psi_edges[:, 0])      # x=0 处通量
     phi_a = np.sum(weights * psi_edges[:, -1])     # x=a 处通量
@@ -226,8 +231,8 @@ def one_dimension_SN():
 
     ax.plot([0, 1], [0, 0], [0, 0], 'w--', linewidth=1, zorder=10) # 地面上的中线
     
-    plt.tight_layout()
-    plt.show()
+    #plt.tight_layout()
+    #plt.show()
 
 if __name__ == "__main__":
     one_dimension_SN()

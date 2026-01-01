@@ -3,27 +3,24 @@ import time
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
-class MOC_Solver_Fixed:
-    def __init__(self, pitch, radius, n_azimuthal, n_rays, material_data):
-        self.pitch = pitch  
-        self.radius = radius 
-        self.n_angles = n_azimuthal
-        self.n_rays = n_rays
-        self.mats = material_data
+class MOC:
+    def __init__(self, pitch, radius, n_angles, n_rays, material):
+        self.pitch = pitch # 删距
+        self.radius = radius  # 燃料棒半径
+        self.n_angles = n_angles # 方位角数量
+        self.n_rays = n_rays # 特征线密度
+        self.mats = material
+    
+        self.vol_fuel = np.pi * radius**2 # 燃料区面积
+        self.vol_mod = pitch**2 - self.vol_fuel  # 慢化区面积
+        self.volumes = np.array([self.vol_fuel, self.vol_mod]) # 【燃料区面积，慢化区面积】
         
-        # 1. 几何体积真值
-        self.vol_fuel = np.pi * radius**2
-        self.vol_mod = pitch**2 - self.vol_fuel
-        self.volumes = np.array([self.vol_fuel, self.vol_mod])
-        
-        # 2. 物理量初始化
-        self.flux = np.array([1.0, 1.0])
+        self.flux = np.array([1.0, 1.0]) # 初始化
         self.source = np.zeros(2)
         self.k_eff = 1.0
         self.k_history = [] 
         self.tracks, self.moc_vol_raw = self._generate_tracks()
         
-        # 4. 体积校正
         self.moc_geo_area = self.moc_vol_raw * (2.0 / np.pi)
         self.boundary_psi = np.zeros((len(self.tracks), 2))   # 边界角通量
 
@@ -226,7 +223,7 @@ pitch = 1.26
 radius = 0.41
 
 # 2. 初始化并求解
-moc = MOC_Solver_Fixed(pitch, radius, 16, 60, materials)
+moc = MOC(pitch, radius, 16, 60, materials)
 
 # 3. 获取真实的计算结果
 # 这里直接接收 solve() 返回的两个变量

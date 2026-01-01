@@ -247,7 +247,7 @@ radius = 0.54
 # ss (Scatter) = Scattering
 mat_fuel = {'st': 0.2030, 'nusf': 0.0700, 'ss': 0.1880} 
 mat_mod  = {'st': 0.9000, 'nusf': 0.0000, 'ss': 0.8990} 
-
+ 
 materials = {0: mat_fuel, 1: mat_mod}
 
 # 3. 初始化求解器
